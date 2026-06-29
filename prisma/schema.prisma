@@ -1,0 +1,89 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Site {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  domain    String     @unique
+  apiKey    String     @unique @map("api_key")
+  isActive  Boolean    @default(true) @map("is_active")
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  visitLogs VisitLog[]
+
+  @@map("sites")
+}
+
+model Visitor {
+  id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fingerprintId        String                @unique @map("fingerprint_id")
+  visitCount           Int                   @default(1) @map("visit_count")
+  country              String?
+  city                 String?
+  isp                  String?
+  timezone             String?
+  firstSeenAt          DateTime              @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt           DateTime              @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  visitLogs            VisitLog[]
+  fingerprintComponent FingerprintComponent?
+
+  @@map("visitors")
+}
+
+model VisitLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  visitor    Visitor  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  visitorId  String   @map("visitor_id") @db.Uuid
+  site       Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  siteId     String?  @map("site_id") @db.Uuid
+  ip         String   @db.VarChar(45)
+  pageUrl    String?  @map("page_url")
+  referrer   String?
+  userAgent  String?  @map("user_agent")
+  browser    String?
+  os         String?
+  deviceType String?  @map("device_type")
+  screenRes  String?  @map("screen_res")
+  language   String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([visitorId])
+  @@index([createdAt])
+  @@map("visit_logs")
+}
+
+model FingerprintComponent {
+  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  visitor    Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  visitorId  String  @unique @map("visitor_id") @db.Uuid
+  canvasHash String? @map("canvas_hash")
+  webglHash  String? @map("webgl_hash")
+  audioHash  String? @map("audio_hash")
+  raw        Json?
+
+  @@map("fingerprint_components")
+}
+
+model BlockedIp {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ip        String    @unique @db.VarChar(45)
+  reason    String?
+  blockedBy String?   @map("blocked_by")
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("blocked_ips")
+}
+
+model Admin {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  username     String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("admins")
+}
