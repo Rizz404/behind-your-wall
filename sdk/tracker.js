@@ -19,24 +19,56 @@
     window.location.href = '/blocked';
   }
 
+  function componentHash(component) {
+    if (!component || component.value === undefined || component.value === null) return undefined;
+    return typeof component.value === 'string' ? component.value : JSON.stringify(component.value);
+  }
+
+  function parseUserAgent(ua) {
+    var browser;
+    if (/Edg\//.test(ua)) browser = 'Edge';
+    else if (/OPR\//.test(ua)) browser = 'Opera';
+    else if (/Chrome\//.test(ua) && !/Chromium/.test(ua)) browser = 'Chrome';
+    else if (/Firefox\//.test(ua)) browser = 'Firefox';
+    else if (/Safari\//.test(ua) && /Version\//.test(ua)) browser = 'Safari';
+    else browser = undefined;
+
+    var os;
+    if (/Windows/.test(ua)) os = 'Windows';
+    else if (/Mac OS X/.test(ua)) os = 'macOS';
+    else if (/Android/.test(ua)) os = 'Android';
+    else if (/iPhone|iPad|iPod/.test(ua)) os = 'iOS';
+    else if (/Linux/.test(ua)) os = 'Linux';
+    else os = undefined;
+
+    var deviceType;
+    if (/iPad|Tablet/.test(ua)) deviceType = 'tablet';
+    else if (/Mobi|Android.*Mobile|iPhone/.test(ua)) deviceType = 'mobile';
+    else deviceType = 'desktop';
+
+    return { browser: browser, os: os, deviceType: deviceType };
+  }
+
   function send(fingerprintComponents) {
     var fp = fingerprintComponents.visitorId;
     var components = fingerprintComponents.components || {};
+    var ua = navigator.userAgent;
+    var parsedUa = parseUserAgent(ua);
 
     var payload = {
       fingerprintId: fp,
       pageUrl: window.location.href,
       referrer: document.referrer || undefined,
-      userAgent: navigator.userAgent,
-      browser: undefined,
-      os: undefined,
-      deviceType: undefined,
+      userAgent: ua,
+      browser: parsedUa.browser,
+      os: parsedUa.os,
+      deviceType: parsedUa.deviceType,
       screenRes: window.screen.width + 'x' + window.screen.height,
       language: navigator.language,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      canvasHash: components.canvas && components.canvas.value,
-      webglHash: components.webgl && components.webgl.value,
-      audioHash: components.audio && components.audio.value,
+      canvasHash: componentHash(components.canvas),
+      webglHash: componentHash(components.webGlBasics),
+      audioHash: componentHash(components.audio),
       rawComponents: components,
     };
 
@@ -65,22 +97,16 @@
   }
 
   function loadFingerprintJs(callback) {
-    var existing = document.querySelector('script[data-tracker-fpjs]');
-    if (existing) {
-      existing.addEventListener('load', callback);
-      return;
-    }
-
-    var fpScript = document.createElement('script');
-    fpScript.src = 'https://openfpcdn.io/fingerprintjs/v4';
-    fpScript.async = true;
-    fpScript.setAttribute('data-tracker-fpjs', '1');
-    fpScript.addEventListener('load', callback);
-    document.head.appendChild(fpScript);
+    import(/* webpackIgnore: true */ 'https://openfpcdn.io/fingerprintjs/v4')
+      .then(function (mod) {
+        callback(mod.default);
+      })
+      .catch(function (err) {
+        console.error('[tracker.js] failed to load fingerprintjs', err);
+      });
   }
 
-  loadFingerprintJs(function () {
-    // eslint-disable-next-line no-undef
+  loadFingerprintJs(function (FingerprintJS) {
     FingerprintJS.load()
       .then(function (fp) {
         return fp.get();
