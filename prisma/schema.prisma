@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["views"]
 }
 
 datasource db {
@@ -86,4 +87,31 @@ model Admin {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@map("admins")
+}
+
+/// One row per visitor: identity, location, and most recent visit/device/site info.
+/// Backed by the "visitor_summary" SQL view (see migrations/20260630000000_add_visitor_summary_view).
+view VisitorSummary {
+  visitorId      String   @map("visitorId") @db.Uuid
+  fingerprintId  String   @map("fingerprintId")
+  visitCount     Int      @map("visitCount")
+  firstSeenAt    DateTime @map("firstSeenAt") @db.Timestamptz(3)
+  lastSeenAt     DateTime @map("lastSeenAt") @db.Timestamptz(3)
+  country        String?
+  city           String?
+  isp            String?
+  timezone       String?
+  siteId         String?  @map("siteId") @db.Uuid
+  siteName       String?  @map("siteName")
+  siteDomain     String?  @map("siteDomain")
+  lastPageUrl    String?  @map("lastPageUrl")
+  lastReferrer   String?  @map("lastReferrer")
+  lastBrowser    String?  @map("lastBrowser")
+  lastOs         String?  @map("lastOs")
+  lastDeviceType String?  @map("lastDeviceType")
+  lastScreenRes  String?  @map("lastScreenRes")
+  lastLanguage   String?  @map("lastLanguage")
+  lastIp         String?  @map("lastIp")
+
+  @@map("visitor_summary")
 }

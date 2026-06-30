@@ -13,6 +13,11 @@ export class VisitorsController {
     return this.visitorsService.findAll(query);
   }
 
+  @Get('summary')
+  findSummary(@Query() query: ListVisitorsQueryDto) {
+    return this.visitorsService.findSummary(query);
+  }
+
   @Get(':fingerprintId')
   findOne(@Param('fingerprintId') fingerprintId: string) {
     return this.visitorsService.findByFingerprintId(fingerprintId);

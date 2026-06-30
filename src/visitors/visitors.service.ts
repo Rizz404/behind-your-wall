@@ -45,4 +45,27 @@ export class VisitorsService {
 
     return { ...visitor, visitLogs };
   }
+
+  async findSummary(query: ListVisitorsQueryDto) {
+    const where: Prisma.VisitorSummaryWhereInput = {};
+    if (query.country) where.country = query.country;
+    if (query.from || query.to) {
+      where.lastSeenAt = {
+        ...(query.from ? { gte: new Date(query.from) } : {}),
+        ...(query.to ? { lte: new Date(query.to) } : {}),
+      };
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.visitorSummary.findMany({
+        where,
+        skip: query.skip,
+        take: query.take,
+        orderBy: { lastSeenAt: 'desc' },
+      }),
+      this.prisma.visitorSummary.count({ where }),
+    ]);
+
+    return { items, total, skip: query.skip ?? 0, take: query.take ?? 25 };
+  }
 }
