@@ -14,7 +14,7 @@ Fingerprint & IP Tracker API — dibangun dengan NestJS, Prisma, dan PostgreSQL.
   - [1. Login Admin](#1-login-admin)
   - [2. Membuat Site (mendapatkan API Key)](#2-membuat-site-mendapatkan-api-key)
   - [3. Memasang Tracker di Website Target](#3-memasang-tracker-di-website-target)
-  - [4. Endpoint Track (dipanggil otomatis oleh tracker.js)](#4-endpoint-track-dipanggil-otomatis-oleh-trackerjs)
+  - [4. Endpoint Sync (dipanggil otomatis oleh widget.js)](#4-endpoint-sync-dipanggil-otomatis-oleh-widgetjs)
   - [5. Melihat Daftar Pengunjung](#5-melihat-daftar-pengunjung)
   - [6. Analytics Overview](#6-analytics-overview)
   - [7. Blocklist IP](#7-blocklist-ip)
@@ -29,7 +29,7 @@ Fingerprint & IP Tracker API — dibangun dengan NestJS, Prisma, dan PostgreSQL.
 - **Blocklist**: IP yang diblokir disinkronkan lewat cache agar pengecekan di endpoint track cepat.
 - **IP enricher**: lookup geolokasi IP berjalan fire-and-forget (tidak memblok response track).
 - **Track**: upsert visitor dilakukan atomik via raw SQL agar tahan race condition saat banyak request bersamaan dari fingerprint yang sama.
-- **sdk/tracker.js**: script client-side yang ditempel di website target, menjalankan FingerprintJS lalu mengirim data ke endpoint `/v1/track`.
+- **sdk/widget.js**: script client-side yang ditempel di website target, menjalankan FingerprintJS lalu mengirim data ke endpoint `/v1/sync`.
 
 ## Prasyarat
 
@@ -141,7 +141,7 @@ curl -X POST http://localhost:3100/v1/sites \
   -d '{"name": "Toko Online Saya", "domain": "tokoku.com"}'
 ```
 
-Response berisi `apiKey` berformat `fts_<domain-slug>_<random hex>`. Simpan ini untuk dipasang di tracker.js.
+Response berisi `apiKey` berformat `fts_<domain-slug>_<random hex>`. Simpan ini untuk dipasang di widget.js.
 
 Endpoint lain:
 
@@ -155,11 +155,11 @@ curl -X DELETE -H "Authorization: Bearer <accessToken>" http://localhost:3100/v1
 
 ### 3. Memasang Tracker di Website Target
 
-Tempel `sdk/tracker.js` (host file ini di mana saja yang bisa diakses publik, misal dari server API ini sendiri atau CDN) ke halaman HTML website yang ingin ditrack:
+Tempel `sdk/widget.js` (host file ini di mana saja yang bisa diakses publik, misal dari server API ini sendiri atau CDN) ke halaman HTML website yang ingin ditrack:
 
 ```html
 <script
-  src="https://api.kamu.com/tracker.js"
+  src="https://api.kamu.com/static/widget.js"
   data-site-key="fts_tokoku_com_xxxxxxxxxxxxxxxx"
   data-api-base="https://api.kamu.com"
 ></script>
@@ -171,7 +171,7 @@ Tempel `sdk/tracker.js` (host file ini di mana saja yang bisa diakses publik, mi
 Saat halaman dimuat, script ini otomatis:
 1. Memuat library FingerprintJS dari CDN.
 2. Menghasilkan `visitorId` (fingerprint) dan raw components (canvas, webgl, audio hash, dll).
-3. Mengirim `POST /v1/track` dengan header `X-Site-Key`.
+3. Mengirim `POST /v1/sync` dengan header `X-Site-Key`.
 4. Jika IP/fingerprint pengunjung diblokir, otomatis redirect ke `/blocked` (bisa di-custom dengan listen event `tracker:blocked` di `document`).
 
 Event yang bisa didengarkan di halaman target:
@@ -181,12 +181,12 @@ document.addEventListener('tracker:ready', (e) => console.log('tracked', e.detai
 document.addEventListener('tracker:blocked', (e) => console.log('blocked', e.detail));
 ```
 
-### 4. Endpoint Track (dipanggil otomatis oleh tracker.js)
+### 4. Endpoint Sync (dipanggil otomatis oleh widget.js)
 
 Biasanya tidak dipanggil manual, tapi untuk testing:
 
 ```bash
-curl -X POST http://localhost:3100/v1/track \
+curl -X POST http://localhost:3100/v1/sync \
   -H "Content-Type: application/json" \
   -H "X-Site-Key: fts_tokoku_com_xxxxxxxxxxxxxxxx" \
   -d '{

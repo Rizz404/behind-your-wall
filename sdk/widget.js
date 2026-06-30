@@ -72,7 +72,7 @@
       rawComponents: components,
     };
 
-    fetch(apiBase + '/v1/track', {
+    fetch(apiBase + '/v1/sync', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

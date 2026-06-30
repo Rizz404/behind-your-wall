@@ -12,7 +12,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
  * "not blocked" instead of falling back to the DB. This is also the documented way to exercise
  * the Noop cache path end-to-end.
  */
-describe('POST /v1/track (e2e)', () => {
+describe('POST /v1/sync (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let siteApiKey: string;
@@ -39,7 +39,7 @@ describe('POST /v1/track (e2e)', () => {
 
   it('rejects requests without X-Site-Key', async () => {
     await request(app.getHttpServer())
-      .post('/v1/track')
+      .post('/v1/sync')
       .send({ fingerprintId: randomUUID() })
       .expect(401);
   });
@@ -48,7 +48,7 @@ describe('POST /v1/track (e2e)', () => {
     const fingerprintId = randomUUID();
 
     const res = await request(app.getHttpServer())
-      .post('/v1/track')
+      .post('/v1/sync')
       .set('X-Site-Key', siteApiKey)
       .send({ fingerprintId, pageUrl: 'https://example.com/' })
       .expect(201);
@@ -67,13 +67,13 @@ describe('POST /v1/track (e2e)', () => {
     const fingerprintId = randomUUID();
 
     await request(app.getHttpServer())
-      .post('/v1/track')
+      .post('/v1/sync')
       .set('X-Site-Key', siteApiKey)
       .send({ fingerprintId })
       .expect(201);
 
     await request(app.getHttpServer())
-      .post('/v1/track')
+      .post('/v1/sync')
       .set('X-Site-Key', siteApiKey)
       .send({ fingerprintId })
       .expect(201);
@@ -88,11 +88,11 @@ describe('POST /v1/track (e2e)', () => {
 
     const [res1, res2] = await Promise.all([
       request(app.getHttpServer())
-        .post('/v1/track')
+        .post('/v1/sync')
         .set('X-Site-Key', siteApiKey)
         .send({ fingerprintId }),
       request(app.getHttpServer())
-        .post('/v1/track')
+        .post('/v1/sync')
         .set('X-Site-Key', siteApiKey)
         .send({ fingerprintId }),
     ]);
@@ -111,7 +111,7 @@ describe('POST /v1/track (e2e)', () => {
 
     const fingerprintId = randomUUID();
     const res = await request(app.getHttpServer())
-      .post('/v1/track')
+      .post('/v1/sync')
       .set('X-Site-Key', siteApiKey)
       .set('X-Forwarded-For', blockedIp)
       .send({ fingerprintId })

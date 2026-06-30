@@ -7,7 +7,7 @@ import { CurrentSite } from '../common/decorators/current-site.decorator';
 import { TrackService, TrackResult } from './track.service';
 import { TrackDto } from './dto/track.dto';
 
-@Controller('v1/track')
+@Controller('v1/sync')
 @UseGuards(SiteKeyGuard, ThrottlerGuard)
 export class TrackController {
   constructor(private readonly trackService: TrackService) {}

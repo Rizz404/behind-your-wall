@@ -13,7 +13,7 @@ async function bootstrap(): Promise<void> {
     allowedHeaders: ['Content-Type', 'X-Site-Key', 'Authorization'],
   });
 
-  app.useStaticAssets(join(__dirname, '..', 'sdk'), { prefix: '/sdk/' });
+  app.useStaticAssets(join(__dirname, '..', 'sdk'), { prefix: '/static/' });
 
   app.useGlobalPipes(
     new ValidationPipe({
