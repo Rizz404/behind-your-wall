@@ -1,10 +1,10 @@
 -- Add client-side timezone to visit_logs (distinct from visitors.timezone which comes from IP enrichment)
 ALTER TABLE "visit_logs"
-  ADD COLUMN "timezone" varchar(100);
+  ADD COLUMN IF NOT EXISTS "timezone" varchar(100);
 
 -- Add timezone-derived country to visitors (VPN-resistant alternative to IP-based country)
 ALTER TABLE "visitors"
-  ADD COLUMN "timezone_country" varchar(10);
+  ADD COLUMN IF NOT EXISTS "timezone_country" varchar(10);
 
 -- DROP + CREATE is required because CREATE OR REPLACE VIEW does not allow inserting new columns
 -- in the middle of an existing column list — PostgreSQL would treat it as a column rename.
