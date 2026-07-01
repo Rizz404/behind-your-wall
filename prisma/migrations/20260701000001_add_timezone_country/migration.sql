@@ -6,8 +6,10 @@ ALTER TABLE "visit_logs"
 ALTER TABLE "visitors"
   ADD COLUMN "timezone_country" varchar(10);
 
--- Recreate visitor_summary view with timezoneCountry and lastTimezone columns
-CREATE OR REPLACE VIEW "visitor_summary" AS
+-- DROP + CREATE is required because CREATE OR REPLACE VIEW does not allow inserting new columns
+-- in the middle of an existing column list — PostgreSQL would treat it as a column rename.
+DROP VIEW IF EXISTS "visitor_summary";
+CREATE VIEW "visitor_summary" AS
 SELECT
     v.id AS "visitorId",
     v.fingerprint_id AS "fingerprintId",
