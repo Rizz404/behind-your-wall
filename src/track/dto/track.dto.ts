@@ -1,4 +1,13 @@
-import { IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsNotEmpty,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 export class TrackDto {
   @IsString()
@@ -14,10 +23,12 @@ export class TrackDto {
   @IsString()
   referrer?: string;
 
+  // Classic User-Agent string
   @IsOptional()
   @IsString()
   userAgent?: string;
 
+  // Parsed from userAgent string (widget-side)
   @IsOptional()
   @IsString()
   @MaxLength(100)
@@ -48,6 +59,7 @@ export class TrackDto {
   @MaxLength(100)
   timezone?: string;
 
+  // FingerprintJS canvas/webgl/audio hashes
   @IsOptional()
   @IsString()
   canvasHash?: string;
@@ -63,4 +75,40 @@ export class TrackDto {
   @IsOptional()
   @IsObject()
   rawComponents?: Record<string, unknown>;
+
+  // User-Agent Client Hints (navigator.userAgentData)
+  @IsOptional()
+  @IsArray()
+  uaBrands?: Array<{ brand: string; version: string }>;
+
+  @IsOptional()
+  @IsBoolean()
+  uaMobile?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  uaPlatform?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  uaPlatformVersion?: string;
+
+  @IsOptional()
+  @IsObject()
+  uaChRaw?: Record<string, unknown>;
+
+  // HTML5 Geolocation API (navigator.geolocation)
+  @IsOptional()
+  @IsNumber()
+  geoLat?: number;
+
+  @IsOptional()
+  @IsNumber()
+  geoLon?: number;
+
+  @IsOptional()
+  @IsNumber()
+  geoAccuracy?: number;
 }

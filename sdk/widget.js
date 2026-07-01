@@ -5,16 +5,25 @@
   var siteKey = script && script.getAttribute('data-site-key');
   var apiBase = (script && script.getAttribute('data-api-base')) || new URL(script.src).origin;
 
+  // opt-in flags
+  var blockRedirect = script && script.getAttribute('data-block-redirect') === 'true';
+  var geoEnabled = script && script.getAttribute('data-geo') === 'true';
+  var geoTriggerSelector = geoEnabled ? (script.getAttribute('data-geo-trigger') || null) : null;
+
   if (!siteKey) {
     console.error('[tracker.js] missing data-site-key attribute');
     return;
   }
+
+  // fingerprintId is cached after the first sync so the geo-trigger secondary sync can reuse it
+  var cachedFingerprintId = null;
 
   function dispatch(name, detail) {
     document.dispatchEvent(new CustomEvent(name, { detail: detail }));
   }
 
   function defaultBlockHandler() {
+    if (!blockRedirect) return;
     if (window.__trackerBlockHandled) return;
     window.location.href = '/blocked';
   }
@@ -49,11 +58,96 @@
     return { browser: browser, os: os, deviceType: deviceType };
   }
 
-  function send(fingerprintComponents) {
+  // Collect User-Agent Client Hints high-entropy values (Chromium 90+).
+  // Falls back to low-entropy navigator.userAgentData on older Chromium,
+  // returns null on Firefox/Safari which don't implement the API.
+  function getUaClientHints() {
+    var uaData = navigator.userAgentData;
+    if (!uaData) return Promise.resolve(null);
+    if (!uaData.getHighEntropyValues) {
+      return Promise.resolve({
+        brands: uaData.brands,
+        mobile: uaData.mobile,
+        platform: uaData.platform,
+      });
+    }
+    return uaData
+      .getHighEntropyValues([
+        'platform',
+        'platformVersion',
+        'architecture',
+        'model',
+        'uaFullVersion',
+        'fullVersionList',
+      ])
+      .catch(function () { return null; });
+  }
+
+  // Request HTML5 Geolocation with a hard 3-second timeout.
+  // Resolves to {lat, lon, accuracy} or null if denied / timed out / unavailable.
+  function getGeolocation() {
+    return new Promise(function (resolve) {
+      if (!navigator.geolocation) { resolve(null); return; }
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (!settled) { settled = true; resolve(null); }
+      }, 3000);
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve({
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+          });
+        },
+        function () {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(null);
+        },
+        { timeout: 3000, maximumAge: 60000 }
+      );
+    });
+  }
+
+  // Check if geolocation permission is already granted without triggering a dialog.
+  // Resolves to geo data if already granted, null otherwise.
+  function getGeoIfAlreadyGranted() {
+    if (!navigator.geolocation) return Promise.resolve(null);
+    if (!navigator.permissions) return Promise.resolve(null);
+    return navigator.permissions
+      .query({ name: 'geolocation' })
+      .then(function (result) {
+        return result.state === 'granted' ? getGeolocation() : null;
+      })
+      .catch(function () { return null; });
+  }
+
+  // Send a sync request. Used for both the initial sync and the secondary geo-trigger sync.
+  function postSync(payload) {
+    return fetch(apiBase + '/v1/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Site-Key': siteKey,
+      },
+      body: JSON.stringify(payload),
+    }).then(function (res) { return res.json(); });
+  }
+
+  function send(fingerprintComponents, geo, uaCh) {
     var fp = fingerprintComponents.visitorId;
+    cachedFingerprintId = fp;
     var components = fingerprintComponents.components || {};
     var ua = navigator.userAgent;
     var parsedUa = parseUserAgent(ua);
+
+    // Low-entropy UA-CH always available in Chromium even if getHighEntropyValues failed
+    var uaData = navigator.userAgentData;
 
     var payload = {
       fingerprintId: fp,
@@ -70,19 +164,25 @@
       webglHash: componentHash(components.webGlBasics),
       audioHash: componentHash(components.audio),
       rawComponents: components,
+      // User-Agent Client Hints: prefer high-entropy hints, fall back to low-entropy
+      uaBrands: uaCh
+        ? (uaCh.fullVersionList || uaCh.brands || undefined)
+        : (uaData ? uaData.brands : undefined),
+      uaMobile: uaCh
+        ? uaCh.mobile
+        : (uaData ? uaData.mobile : undefined),
+      uaPlatform: uaCh
+        ? uaCh.platform
+        : (uaData ? uaData.platform : undefined),
+      uaPlatformVersion: uaCh ? uaCh.platformVersion : undefined,
+      uaChRaw: uaCh || undefined,
+      // HTML5 Geolocation (null if disabled, denied, or timed out)
+      geoLat: geo ? geo.lat : undefined,
+      geoLon: geo ? geo.lon : undefined,
+      geoAccuracy: geo ? geo.accuracy : undefined,
     };
 
-    fetch(apiBase + '/v1/sync', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Site-Key': siteKey,
-      },
-      body: JSON.stringify(payload),
-    })
-      .then(function (res) {
-        return res.json();
-      })
+    postSync(payload)
       .then(function (data) {
         if (data.blocked) {
           dispatch('tracker:blocked', data);
@@ -96,6 +196,33 @@
       });
   }
 
+  // When data-geo-trigger is set: bind a one-time click handler on the target element.
+  // On click, request geolocation (shows browser dialog) then send a secondary sync
+  // containing only fingerprintId + geo coords. Creates a new VisitLog entry.
+  function setupGeoTrigger(selector) {
+    function bind() {
+      var el = document.querySelector(selector);
+      if (!el) return;
+      el.addEventListener('click', function () {
+        getGeolocation().then(function (geo) {
+          if (!geo || !cachedFingerprintId) return;
+          postSync({
+            fingerprintId: cachedFingerprintId,
+            geoLat: geo.lat,
+            geoLon: geo.lon,
+            geoAccuracy: geo.accuracy,
+          }).catch(function () {});
+        });
+      }, { once: true });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', bind);
+    } else {
+      bind();
+    }
+  }
+
   function loadFingerprintJs(callback) {
     import(/* webpackIgnore: true */ 'https://openfpcdn.io/fingerprintjs/v4')
       .then(function (mod) {
@@ -106,12 +233,31 @@
       });
   }
 
+  // Determine geo promise based on opt-in flags:
+  // - geo disabled → always null
+  // - geo enabled, button trigger → silently get geo if already granted; dialog deferred to click
+  // - geo enabled, no trigger → request immediately (shows dialog on page load)
+  var geoPromise;
+  if (!geoEnabled) {
+    geoPromise = Promise.resolve(null);
+  } else if (geoTriggerSelector) {
+    geoPromise = getGeoIfAlreadyGranted();
+    setupGeoTrigger(geoTriggerSelector);
+  } else {
+    geoPromise = getGeolocation();
+  }
+
+  // Kick off UA-CH immediately — runs in parallel with FingerprintJS loading
+  var uaChPromise = getUaClientHints();
+
   loadFingerprintJs(function (FingerprintJS) {
     FingerprintJS.load()
-      .then(function (fp) {
-        return fp.get();
+      .then(function (fp) { return fp.get(); })
+      .then(function (fpResult) {
+        return Promise.all([geoPromise, uaChPromise]).then(function (extras) {
+          send(fpResult, extras[0], extras[1]);
+        });
       })
-      .then(send)
       .catch(function (err) {
         console.error('[tracker.js] fingerprint generation failed', err);
       });

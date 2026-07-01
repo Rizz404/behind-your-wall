@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BlocklistService } from '../blocklist/blocklist.service';
 import { IpEnricherService } from '../ip-enricher/ip-enricher.service';
 import { TrackDto } from './dto/track.dto';
+import { getCountryFromTimezone } from '../common/utils/timezone-country.util';
 
 interface UpsertedVisitorRow {
   id: string;
@@ -38,6 +39,17 @@ export class TrackService {
       await this.upsertFingerprintComponents(visitorId, dto);
     }
 
+    // Derive country from client-side timezone — VPN-resistant, O(1) lookup
+    if (dto.timezone) {
+      const timezoneCountry = getCountryFromTimezone(dto.timezone);
+      if (timezoneCountry) {
+        await this.prisma.visitor.update({
+          where: { id: visitorId },
+          data: { timezoneCountry },
+        });
+      }
+    }
+
     await this.prisma.visitLog.create({
       data: {
         visitorId,
@@ -51,6 +63,14 @@ export class TrackService {
         deviceType: dto.deviceType,
         screenRes: dto.screenRes,
         language: dto.language,
+        timezone: dto.timezone,
+        uaBrands: dto.uaBrands as Prisma.InputJsonValue,
+        uaMobile: dto.uaMobile,
+        uaPlatform: dto.uaPlatform,
+        uaPlatformVersion: dto.uaPlatformVersion,
+        geoLat: dto.geoLat,
+        geoLon: dto.geoLon,
+        geoAccuracy: dto.geoAccuracy,
       },
     });
 
@@ -87,12 +107,14 @@ export class TrackService {
         webglHash: dto.webglHash,
         audioHash: dto.audioHash,
         raw: dto.rawComponents as Prisma.InputJsonValue,
+        uaChRaw: dto.uaChRaw as Prisma.InputJsonValue,
       },
       update: {
         canvasHash: dto.canvasHash,
         webglHash: dto.webglHash,
         audioHash: dto.audioHash,
         raw: dto.rawComponents as Prisma.InputJsonValue,
+        uaChRaw: dto.uaChRaw as Prisma.InputJsonValue,
       },
     });
   }

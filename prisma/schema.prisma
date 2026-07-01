@@ -27,6 +27,7 @@ model Visitor {
   city                 String?
   isp                  String?
   timezone             String?
+  timezoneCountry      String?               @map("timezone_country")
   firstSeenAt          DateTime              @default(now()) @map("first_seen_at") @db.Timestamptz(3)
   lastSeenAt           DateTime              @default(now()) @map("last_seen_at") @db.Timestamptz(3)
   visitLogs            VisitLog[]
@@ -36,21 +37,29 @@ model Visitor {
 }
 
 model VisitLog {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  visitor    Visitor  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
-  visitorId  String   @map("visitor_id") @db.Uuid
-  site       Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
-  siteId     String?  @map("site_id") @db.Uuid
-  ip         String   @db.VarChar(45)
-  pageUrl    String?  @map("page_url")
-  referrer   String?
-  userAgent  String?  @map("user_agent")
-  browser    String?
-  os         String?
-  deviceType String?  @map("device_type")
-  screenRes  String?  @map("screen_res")
-  language   String?
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  visitor           Visitor  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  visitorId         String   @map("visitor_id") @db.Uuid
+  site              Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  siteId            String?  @map("site_id") @db.Uuid
+  ip                String   @db.VarChar(45)
+  pageUrl           String?  @map("page_url")
+  referrer          String?
+  userAgent         String?  @map("user_agent")
+  browser           String?
+  os                String?
+  deviceType        String?  @map("device_type")
+  screenRes         String?  @map("screen_res")
+  language          String?
+  timezone          String?  @db.VarChar(100)
+  uaBrands          Json?    @map("ua_brands")
+  uaMobile          Boolean? @map("ua_mobile")
+  uaPlatform        String?  @map("ua_platform") @db.VarChar(200)
+  uaPlatformVersion String?  @map("ua_platform_version") @db.VarChar(100)
+  geoLat            Float?   @map("geo_lat")
+  geoLon            Float?   @map("geo_lon")
+  geoAccuracy       Float?   @map("geo_accuracy")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@index([visitorId])
   @@index([createdAt])
@@ -65,6 +74,7 @@ model FingerprintComponent {
   webglHash  String? @map("webgl_hash")
   audioHash  String? @map("audio_hash")
   raw        Json?
+  uaChRaw    Json?   @map("ua_ch_raw")
 
   @@map("fingerprint_components")
 }
@@ -90,28 +100,34 @@ model Admin {
 }
 
 /// One row per visitor: identity, location, and most recent visit/device/site info.
-/// Backed by the "visitor_summary" SQL view (see migrations/20260630000000_add_visitor_summary_view).
+/// Backed by the "visitor_summary" SQL view (see migrations/).
 view VisitorSummary {
-  visitorId      String   @map("visitorId") @db.Uuid
-  fingerprintId  String   @map("fingerprintId")
-  visitCount     Int      @map("visitCount")
-  firstSeenAt    DateTime @map("firstSeenAt") @db.Timestamptz(3)
-  lastSeenAt     DateTime @map("lastSeenAt") @db.Timestamptz(3)
-  country        String?
-  city           String?
-  isp            String?
-  timezone       String?
-  siteId         String?  @map("siteId") @db.Uuid
-  siteName       String?  @map("siteName")
-  siteDomain     String?  @map("siteDomain")
-  lastPageUrl    String?  @map("lastPageUrl")
-  lastReferrer   String?  @map("lastReferrer")
-  lastBrowser    String?  @map("lastBrowser")
-  lastOs         String?  @map("lastOs")
-  lastDeviceType String?  @map("lastDeviceType")
-  lastScreenRes  String?  @map("lastScreenRes")
-  lastLanguage   String?  @map("lastLanguage")
-  lastIp         String?  @map("lastIp")
+  visitorId         String   @map("visitorId") @db.Uuid
+  fingerprintId     String   @map("fingerprintId")
+  visitCount        Int      @map("visitCount")
+  firstSeenAt       DateTime @map("firstSeenAt") @db.Timestamptz(3)
+  lastSeenAt        DateTime @map("lastSeenAt") @db.Timestamptz(3)
+  country           String?
+  city              String?
+  isp               String?
+  timezone          String?
+  timezoneCountry   String?  @map("timezoneCountry")
+  siteId            String?  @map("siteId") @db.Uuid
+  siteName          String?  @map("siteName")
+  siteDomain        String?  @map("siteDomain")
+  lastPageUrl       String?  @map("lastPageUrl")
+  lastReferrer      String?  @map("lastReferrer")
+  lastBrowser       String?  @map("lastBrowser")
+  lastOs            String?  @map("lastOs")
+  lastDeviceType    String?  @map("lastDeviceType")
+  lastScreenRes     String?  @map("lastScreenRes")
+  lastLanguage      String?  @map("lastLanguage")
+  lastIp            String?  @map("lastIp")
+  lastUaMobile      Boolean? @map("lastUaMobile")
+  lastUaPlatform    String?  @map("lastUaPlatform")
+  lastGeoLat        Float?   @map("lastGeoLat")
+  lastGeoLon        Float?   @map("lastGeoLon")
+  lastTimezone      String?  @map("lastTimezone")
 
   @@map("visitor_summary")
 }

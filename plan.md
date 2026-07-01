@@ -2,34 +2,31 @@
 
 ## Context
 
-`unfinished-plan.md` di root project berisi rancangan sistem fingerprint & IP tracker dalam 3 alternatif stack (NestJS, Spring Boot, Go) plus bagian yang sama di ketiganya (schema DB, Redis, API contract, alur data, client SDK, deployment, fase pengerjaan). Sudah diputuskan: **pakai versi NestJS**. Project ini masih kosong (belum ada kode), jadi dokumen ini mengubah rancangan tingkat-tinggi tadi menjadi plan implementasi yang konkret dan bisa langsung dieksekusi — bukan lagi perbandingan 3 stack.
+`unfinished-plan.md` di root project berisi rancangan sistem fingerprint & IP tracker dalam 3 alternatif stack (NestJS, Spring Boot, Go) plus bagian yang sama di ketiganya (schema DB, Redis, API contract, alur data, client SDK, deployment, fase pengerjaan). Sudah diputuskan: **pakai versi NestJS**. Project ini sudah selesai diimplementasikan dan berjalan di production.
 
 Keputusan yang sudah diambil:
-- Admin auth punya tabel `admins` di database sejak Phase 2 (bukan single credential via env var), supaya upgrade ke multi-admin di Phase 4 tidak perlu migrasi tambahan.
-- **ORM diganti dari TypeORM ke Prisma.** Prisma tidak punya "LTS" formal (sama seperti Spring Boot/Go di dokumen asli) — kebijakan tim Prisma: tiap major version "production-recommended" didukung ~12 bulan sejak rilis. **Prisma 7** (rilis November 2025, versi stabil terbaru `7.8.0` per pertengahan 2026) adalah pilihan saat ini: query engine baru ditulis full TypeScript (tidak lagi pakai binary Rust), ~3x lebih cepat dan bundle ~90% lebih kecil dibanding era Prisma 5/6. Ini pilihan paling aman untuk project baru sekarang.
-- **Redis dijadikan optional**, bukan dependency wajib. App harus tetap berfungsi penuh (validasi site key, cek blocklist) tanpa Redis terpasang — Redis hanya mempercepat, Postgres tetap source of truth di semua skenario.
-
-Output dari plan ini: file `plan.md` ini sendiri di root project.
+- Admin auth punya tabel `admins` di database, supaya upgrade ke multi-admin di Phase 4 tidak perlu migrasi tambahan.
+- **ORM: Prisma 7** (rilis November 2025, engine full TypeScript tanpa binary Rust). Prisma 7 mewajibkan driver adapter — connection string dikonfigurasi di `prisma.config.ts` (untuk CLI) dan lewat `@prisma/adapter-pg` (`PrismaPg`) di runtime.
+- **Redis dijadikan optional**: app berfungsi penuh tanpa Redis, cukup gunakan no-op cache.
+- **Production di relay.fts-tech.co.id** (Plesk Hostinger, Node 25 via nodenv, Passenger).
 
 ---
 
-## Tech Stack (Final)
+## Tech Stack (Implemented)
 
 | Komponen | Pilihan | Versi | Keterangan |
 | --- | --- | --- | --- |
-| Runtime | Node.js | 24 LTS "Krypton" | |
+| Runtime | Node.js | 25 | Production menggunakan Node 25 via nodenv (`.node-version` file) |
 | Framework | NestJS | 11.x (Express v5) | |
 | Language | TypeScript | 5.x | |
-| ORM | **Prisma** | **7.8.x** | Tidak ada LTS formal, tapi Prisma 7 adalah major "production-recommended" saat ini (rilis Nov 2025, dukungan ~12 bulan). Engine TS murni, tanpa binary Rust. |
+| ORM | Prisma | 7.x | Engine TS murni, tanpa binary Rust. Driver adapter wajib (`@prisma/adapter-pg`). |
 | DB | PostgreSQL | 17.x | |
-| Redis Client | node-redis | 6.0.0 | **Optional** — hanya dipasang kalau `REDIS_URL` di-set di env. |
+| Redis Client | node-redis | 6.0.0 | **Optional** — hanya dipakai kalau `REDIS_URL` di-set. |
 | Auth | Passport JWT + bcrypt | 10.x | |
 | Validasi | class-validator + class-transformer | 0.14.x + 0.5.x | |
 | Rate limiting | @nestjs/throttler | latest | |
 | HTTP client (enrichment) | @nestjs/axios | latest | |
-| Process manager | pm2 (cluster, 2 instance) | latest | |
-
-Catatan implementasi (koreksi dari asumsi awal): Prisma 7 **mewajibkan driver adapter** untuk koneksi database — `PrismaClient` tidak lagi bisa langsung baca `url` dari `datasource` block di `schema.prisma` (CLI akan menolak field itu). Connection string sekarang dikonfigurasi dua tempat: `prisma.config.ts` (dipakai CLI untuk `migrate`/`generate`) dan lewat `@prisma/adapter-pg` (`PrismaPg`) yang di-pass ke constructor `PrismaClient` saat runtime. Maka tetap perlu install `pg` + `@prisma/adapter-pg`, bukan tidak perlu seperti asumsi awal.
+| Process manager | Passenger (Plesk) | — | Production pakai Passenger bukan PM2 langsung |
 
 ---
 
@@ -42,8 +39,8 @@ AppModule
 ├── CacheModule (global)        — abstraksi cache; backing Redis kalau REDIS_URL ada, else No-op
 ├── AuthModule                  — login admin (tabel `admins`), JWT strategy
 ├── SitesModule                 — CRUD site + generate API key
-├── TrackModule                 — POST /v1/track
-├── VisitorsModule              — Visitor/VisitLog/FingerprintComponent + admin endpoints
+├── TrackModule                 — POST /v1/sync
+├── VisitorsModule              — Visitor/VisitLog/FingerprintComponent + admin endpoints + summary view
 ├── BlocklistModule             — CRUD blocked IP + sync ke cache
 ├── AnalyticsModule             — summary & chart
 └── IpEnricherModule            — panggil ip-api.com, async non-blocking
@@ -53,22 +50,26 @@ Dua guard inti: `SiteKeyGuard` (header `X-Site-Key`, DB + cache 5 menit) dan `Jw
 
 ### Desain "Redis optional" via `CacheModule`
 
-Daripada menyebar pengecekan `if (redisEnabled)` di setiap service, dibuat satu interface `CacheService` (`get`/`set`/`del`/`isEnabled`) dengan dua implementasi:
+Interface `CacheService` (`get`/`set`/`del`/`isEnabled`) dengan dua implementasi:
 
-- `RedisCacheService` — dipakai kalau `REDIS_URL` ter-set. Wrapper node-redis v6 (lihat lifecycle di bawah).
-- `NoopCacheService` — dipakai kalau tidak. `get()` selalu return `null` (selalu "miss"), `set()`/`del()` no-op, `isEnabled()` return `false`.
+- `RedisCacheService` — dipakai kalau `REDIS_URL` ter-set.
+- `NoopCacheService` — dipakai kalau tidak. `get()` selalu return `null`, `set()`/`del()` no-op.
 
-`CacheModule` adalah dynamic module yang memilih implementasi lewat factory provider berdasarkan `ConfigService.get('REDIS_URL')`. Konsekuensi penting: **logika fallback-ke-DB di `SiteKeyGuard` dan `BlocklistService` yang sudah ada untuk menangani Redis down/error adalah kode yang sama persis dengan logika "Redis tidak dipasang"** — cache miss selalu berarti "tanya DB", baik itu karena Redis benar-benar tidak ada, sedang down, atau memang belum di-cache. Tidak perlu cabang kode tambahan di guard/service manapun.
+`CacheModule` adalah dynamic module yang memilih implementasi lewat factory provider berdasarkan `ConfigService.get('REDIS_URL')`. Cache miss selalu berarti "tanya DB" — tidak ada cabang kode tambahan di guard/service.
 
 ---
 
 ## Struktur Folder
 
 ```
-prisma.config.ts          # connection string untuk Prisma CLI (migrate/generate) — wajib di Prisma 7
+prisma.config.ts          # connection string untuk Prisma CLI (migrate/generate)
 prisma/
 ├── schema.prisma
-└── migrations/                  # di-generate oleh Prisma Migrate
+├── seed.ts
+└── migrations/
+    ├── 20260629000000_init/
+    ├── 20260630000000_add_visitor_summary_view/
+    └── 20260701000000_add_ua_hints_and_geo/
 
 src/
 ├── main.ts
@@ -78,18 +79,18 @@ src/
 │   └── env.validation.ts
 ├── prisma/
 │   ├── prisma.module.ts
-│   └── prisma.service.ts        # extends PrismaClient, OnModuleInit/OnModuleDestroy
+│   └── prisma.service.ts
 ├── cache/
-│   ├── cache.module.ts          # dynamic module, pilih Redis vs Noop
-│   ├── cache.interface.ts       # CacheService contract
+│   ├── cache.module.ts
+│   ├── cache.interface.ts
 │   ├── redis-cache.service.ts
 │   └── noop-cache.service.ts
 ├── common/
 │   ├── decorators/get-ip.decorator.ts
 │   ├── decorators/current-admin.decorator.ts
+│   ├── decorators/current-site.decorator.ts
 │   ├── guards/site-key.guard.ts
 │   ├── guards/jwt-auth.guard.ts
-│   ├── filters/http-exception.filter.ts
 │   └── utils/ip.util.ts
 ├── auth/
 │   ├── auth.module.ts / auth.controller.ts / auth.service.ts
@@ -112,32 +113,18 @@ src/
 └── ip-enricher/
     └── ip-enricher.module.ts / ip-enricher.service.ts
 
-sdk/tracker.js          # static file, disajikan langsung oleh nginx
-test/                   # e2e specs
-ecosystem.config.js     # pm2 cluster config
+sdk/widget.js          # static file, disajikan via NestJS static middleware di /static/
+test/                  # e2e specs
+ecosystem.config.js    # pm2 config (tidak dipakai di production Plesk, tapi tersedia)
 ```
-
-Catatan struktur:
-- Tidak ada lagi folder `entities/` per modul — dengan Prisma, semua model didefinisikan satu tempat di `prisma/schema.prisma`, tipe TypeScript di-generate otomatis (`@prisma/client`), service tinggal inject `PrismaService` dan pakai `prisma.visitor.findUnique(...)`, dst.
-- `PrismaModule` dan `CacheModule` keduanya `@Global()` agar bisa di-inject di mana saja tanpa import berulang.
-- Penamaan kolom: pakai `@map("nama_kolom")` per field dan `@@map("nama_tabel")` per model di `schema.prisma`, supaya properti TS tetap camelCase tapi kolom SQL tetap snake_case sesuai schema dokumen asli.
 
 ---
 
 ## Database Schema (PostgreSQL 17, via Prisma)
 
-Tabel mengikuti `unfinished-plan.md` **plus tabel `admins`** (dibuat sejak Phase 2):
+### Model
 
 ```prisma
-// prisma/schema.prisma — url dipindah ke prisma.config.ts (lihat catatan implementasi di atas)
-generator client {
-  provider = "prisma-client-js"
-}
-
-datasource db {
-  provider = "postgresql"
-}
-
 model Site {
   id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name      String
@@ -146,7 +133,6 @@ model Site {
   isActive  Boolean    @default(true) @map("is_active")
   createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   visitLogs VisitLog[]
-
   @@map("sites")
 }
 
@@ -158,31 +144,38 @@ model Visitor {
   city                 String?
   isp                  String?
   timezone             String?
+  timezoneCountry      String?               @map("timezone_country")  -- ISO code derived from client timezone, VPN-resistant
   firstSeenAt          DateTime              @default(now()) @map("first_seen_at") @db.Timestamptz(3)
   lastSeenAt           DateTime              @default(now()) @map("last_seen_at") @db.Timestamptz(3)
   visitLogs            VisitLog[]
   fingerprintComponent FingerprintComponent?
-
   @@map("visitors")
 }
 
 model VisitLog {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  visitor    Visitor  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
-  visitorId  String   @map("visitor_id") @db.Uuid
-  site       Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
-  siteId     String?  @map("site_id") @db.Uuid
-  ip         String   @db.VarChar(45)
-  pageUrl    String?  @map("page_url")
-  referrer   String?
-  userAgent  String?  @map("user_agent")
-  browser    String?
-  os         String?
-  deviceType String?  @map("device_type")
-  screenRes  String?  @map("screen_res")
-  language   String?
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  visitorId         String   @map("visitor_id") @db.Uuid
+  siteId            String?  @map("site_id") @db.Uuid
+  ip                String   @db.VarChar(45)
+  pageUrl           String?  @map("page_url")
+  referrer          String?
+  userAgent         String?  @map("user_agent")
+  browser           String?
+  os                String?
+  deviceType        String?  @map("device_type")
+  screenRes         String?  @map("screen_res")
+  language          String?
+  timezone          String?  @db.VarChar(100)              -- client-side timezone from widget
+  // User-Agent Client Hints
+  uaBrands          Json?    @map("ua_brands")
+  uaMobile          Boolean? @map("ua_mobile")
+  uaPlatform        String?  @map("ua_platform") @db.VarChar(200)
+  uaPlatformVersion String?  @map("ua_platform_version") @db.VarChar(100)
+  // HTML5 Geolocation (opt-in via data-geo="true")
+  geoLat            Float?   @map("geo_lat")
+  geoLon            Float?   @map("geo_lon")
+  geoAccuracy       Float?   @map("geo_accuracy")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   @@index([visitorId])
   @@index([createdAt])
   @@map("visit_logs")
@@ -190,75 +183,103 @@ model VisitLog {
 
 model FingerprintComponent {
   id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  visitor    Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
   visitorId  String  @unique @map("visitor_id") @db.Uuid
   canvasHash String? @map("canvas_hash")
   webglHash  String? @map("webgl_hash")
   audioHash  String? @map("audio_hash")
   raw        Json?
-
+  uaChRaw    Json?   @map("ua_ch_raw")   -- raw high-entropy UA Client Hints response
   @@map("fingerprint_components")
-}
-
-model BlockedIp {
-  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  ip        String    @unique @db.VarChar(45)
-  reason    String?
-  blockedBy String?   @map("blocked_by")
-  expiresAt DateTime? @map("expires_at") @db.Timestamptz(3)
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  @@map("blocked_ips")
-}
-
-model Admin {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  username     String   @unique
-  passwordHash String   @map("password_hash")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  @@map("admins")
 }
 ```
 
-Semua kolom waktu pakai `@db.Timestamptz(3)` (bukan `timestamp` polos default Prisma) — penting untuk tracker yang mencatat kunjungan dari berbagai timezone client/server.
+### View: visitor_summary
 
-`gen_random_uuid()` butuh extension `pgcrypto` aktif di database (diaktifkan manual di migration pertama). Index penting sudah tercakup lewat `@unique`/`@@index` di atas: `visitors.fingerprint_id`, `visit_logs.visitor_id`, `visit_logs.created_at`, `blocked_ips.ip`, `admins.username`.
+PostgreSQL view yang menggabungkan data visitor, geolokasi IP, dan visit log terakhir per visitor. Dipakai oleh `GET /v1/visitors/summary`. Dikelola manual lewat migration SQL (bukan Prisma Migrate DDL) karena Prisma belum generate DDL untuk view secara native.
 
-`Admin` di-seed satu baris (bcrypt hash) saat Phase 2; `UsersModule` di Phase 4 tinggal nambah CRUD di atas tabel yang sama, tanpa migrasi baru.
-
----
-
-## Cache Key Structure (kalau Redis aktif)
-
-- `blocklist:ip:{ip_address}` → JSON `{reason, expires_at}`, TTL = expires_at atau permanen tanpa TTL.
-- `site:key:{api_key}` → JSON data site, TTL 300 detik.
-
-Kalau Redis tidak aktif (`NoopCacheService`), key-key ini tidak pernah benar-benar dibuat — setiap pemanggil otomatis jatuh ke query DB langsung.
+Kolom view: `visitorId`, `fingerprintId`, `visitCount`, `firstSeenAt`, `lastSeenAt`, `country`, `city`, `isp`, `timezone`, `siteId`, `siteName`, `siteDomain`, `lastPageUrl`, `lastReferrer`, `lastBrowser`, `lastOs`, `lastDeviceType`, `lastScreenRes`, `lastLanguage`, `lastIp`, `lastUaMobile`, `lastUaPlatform`, `lastGeoLat`, `lastGeoLon`.
 
 ---
 
-## API Endpoints
+## API Endpoints (Implemented)
 
-Identik dengan `unfinished-plan.md` — `POST /v1/track`, `GET /v1/blocklist/check/:ip`, `POST /v1/auth/login`, `GET /v1/visitors`, `GET /v1/visitors/:fingerprintId`, `GET /v1/sites`, `POST /v1/sites`, `DELETE /v1/sites/:id`, `GET /v1/blocklist`, `POST /v1/blocklist`, `DELETE /v1/blocklist/:ip`, `GET /v1/analytics/overview`.
-
-`GET /v1/blocklist/check/:ip` ("fast check"): baca dari cache kalau aktif, kalau tidak langsung query `blocked_ips` (indexed unique di `ip`, tetap cukup cepat untuk skala project ini — tidak ada regresi fungsional, hanya kehilangan lapisan cache).
+| Method | Path | Auth | Keterangan |
+|---|---|---|---|
+| POST | `/v1/auth/login` | — | Login admin, return JWT |
+| GET | `/v1/sites` | JWT | List semua site |
+| POST | `/v1/sites` | JWT | Buat site baru + generate API key |
+| DELETE | `/v1/sites/:id` | JWT | Nonaktifkan site |
+| POST | `/v1/sync` | Site-Key | Sync kunjungan dari widget.js |
+| GET | `/v1/visitors` | JWT | List visitor dengan pagination + filter |
+| GET | `/v1/visitors/summary` | JWT | List via visitor_summary view (lebih efisien) |
+| GET | `/v1/visitors/:fingerprintId` | JWT | Detail visitor + 50 log terakhir |
+| GET | `/v1/blocklist` | JWT | List semua blocked IP |
+| POST | `/v1/blocklist` | JWT | Tambah IP ke blocklist |
+| DELETE | `/v1/blocklist/:ip` | JWT | Hapus IP dari blocklist |
+| GET | `/v1/blocklist/check/:ip` | — | Cek apakah IP diblokir |
+| GET | `/v1/analytics/overview` | JWT | Total visitor, top countries, chart 30 hari |
 
 ---
 
-## Alur Data (POST /v1/track)
+## Sinyal yang Dikumpulkan widget.js
 
-1. tracker.js load FingerprintJS v4 di browser → generate `fingerprint_id`.
-2. POST ke `/v1/track` dengan header `X-Site-Key` + payload (fingerprint_id, page_url, referrer, UA, screen, language, timezone, raw components).
-3. `SiteKeyGuard` validasi: cek cache `site:key:{api_key}` → kalau miss (Redis disabled, down, atau memang belum ke-cache — perlakuannya identik), query DB → kalau cache aktif, cache hasilnya 300s.
-4. Cek cache `blocklist:ip:{ip}` — kalau blocked, langsung return `{blocked:true}`. Kalau cache tidak aktif, cek langsung ke `blocked_ips`.
-5. Upsert visitor by `fingerprint_id` secara **atomic** (lihat detail di bawah) — kalau baru, trigger IP enrichment async (tidak di-await) + simpan fingerprint_components.
-6. Insert baris baru ke `visit_logs`.
-7. Return `{tracked:true, blocked:false}`.
+### FingerprintJS v4
+- `fingerprintId` — stable visitor ID
+- `canvasHash`, `webglHash`, `audioHash` — hash komponen hardware
+- `rawComponents` — raw signal components (JSON)
 
-### Upsert atomic (race condition pada first-visit bersamaan) — via Prisma raw query
+### User-Agent String (parsing sisi widget)
+- `userAgent` — UA string lengkap (`navigator.userAgent`)
+- `browser` — Chrome / Firefox / Safari / Edge / Opera (parsed regex)
+- `os` — Windows / macOS / Android / iOS / Linux
+- `deviceType` — desktop / mobile / tablet
 
-Dua request first-visit dengan `fingerprint_id` sama yang datang hampir bersamaan (double-fire, dua tab) harus tetap menghasilkan satu baris visitor. Prisma `upsert()` standar tidak menjamin atomicity terhadap race ini di semua kondisi, jadi dipakai raw SQL lewat `prisma.$queryRaw` (tagged template, parameter di-escape otomatis oleh Prisma — bukan `$queryRawUnsafe`):
+### User-Agent Client Hints (Chromium 90+)
+- `uaBrands` — array `{brand, version}` dari `fullVersionList` atau `brands`
+- `uaMobile` — boolean, lebih akurat dari UA string parsing
+- `uaPlatform` — nama OS tanpa spoofing (misal "Windows" / "Android")
+- `uaPlatformVersion` — versi OS (misal "15.0.0" = Windows 11)
+- `uaChRaw` — raw response `getHighEntropyValues()` lengkap (disimpan di `fingerprint_components`)
+
+Firefox dan Safari tidak mengimplementasikan UA-CH — field-field ini akan kosong untuk browser tersebut.
+
+### Browser APIs
+- `screenRes` — `window.screen.width + 'x' + window.screen.height`
+- `language` — `navigator.language`
+- `timezone` — `Intl.DateTimeFormat().resolvedOptions().timeZone`
+- `pageUrl`, `referrer`
+
+### HTML5 Geolocation API (opt-in)
+- Hanya aktif jika `data-geo="true"` dipasang di tag script — tidak ada dialog izin tanpa atribut ini
+- `geoLat`, `geoLon` — koordinat fisik, akurasi tinggi (GPS/WiFi/cell)
+- `geoAccuracy` — radius akurasi dalam meter
+- `data-geo-trigger="#selector"` — jika diisi, dialog izin baru muncul saat elemen diklik. Jika permission sudah granted, koordinat diambil diam-diam tanpa dialog. Data geo dikirim via secondary POST /v1/sync setelah klik.
+- Timeout 3 detik. Jika ditolak/timeout, field geo kosong dan tracking tetap berjalan normal.
+
+### Timezone (semua browser, tanpa izin)
+- `timezone` — `Intl.DateTimeFormat().resolvedOptions().timeZone` dari widget, disimpan per visit
+- `timezoneCountry` — dipetakan server-side via `timezone-country.util.ts` (IANA → ISO 3166-1 alpha-2), disimpan di `visitors`. VPN tidak mempengaruhi timezone OS, sehingga field ini lebih akurat dari IP geo untuk deteksi negara.
+
+### IP (server-side)
+- `ip` — dibaca dari header `CF-Connecting-IP` → `X-Forwarded-For` → `req.ip`
+- `country`, `city`, `isp` — enrichment via ip-api.com (fire-and-forget, sekali per visitor baru). Tidak akurat jika user pakai VPN.
+
+---
+
+## Alur Data (POST /v1/sync)
+
+1. `widget.js` load FingerprintJS v4 + paralel request UA-CH dan (jika `data-geo="true"` tanpa trigger, atau permission sudah granted) HTML5 Geolocation.
+2. Setelah fingerprint ready, tunggu UA-CH + geo (sudah berjalan paralel).
+3. POST ke `/v1/sync` dengan header `X-Site-Key` + payload lengkap termasuk timezone browser.
+4. `SiteKeyGuard`: validasi API key via cache (Redis) atau DB (fallback/no-Redis).
+5. Cek blocklist IP via cache atau DB.
+6. Upsert visitor by `fingerprint_id` secara **atomic** via raw SQL (`INSERT ... ON CONFLICT`). Trik `(xmax = 0) AS is_new` mendeteksi insert vs update.
+7. Jika visitor baru: trigger IP enrichment async (tidak di-await) + upsert `fingerprint_components` (termasuk `uaChRaw`).
+8. Map `dto.timezone` → ISO country code via `getCountryFromTimezone()` (O(1) in-memory lookup). Update `visitor.timezoneCountry`.
+9. Insert baris baru ke `visit_logs` (termasuk timezone, UA-CH fields, dan geo fields).
+10. Return `{tracked: true, blocked: false}`.
+
+### Upsert atomic via `$queryRaw`
 
 ```typescript
 const rows = await this.prisma.$queryRaw<Array<{ id: string; visit_count: number; is_new: boolean }>>`
@@ -271,85 +292,56 @@ const rows = await this.prisma.$queryRaw<Array<{ id: string; visit_count: number
 `;
 ```
 
-Trik `(xmax = 0) AS is_new` memberi tahu apakah baris ini baru di-insert (trigger enrichment) atau sekadar di-update. Ini satu-satunya tempat di codebase yang sengaja keluar dari Prisma Client API biasa — beri komentar jelas di kode kenapa.
-
-### IP enrichment — fire-and-forget, tanpa queue
-
-Volume rendah (sekali per visitor baru, bukan per visit) dan ip-api.com free tier dibatasi 45 req/menit, jadi queue/event-emitter tidak diperlukan — cukup `this.ipEnricherService.enrichAndSave(...).catch(err => logger.warn(...))` tanpa `await`. Timeout 3 detik, fail-open (kalau gagal/timeout, visitor tetap tersimpan tanpa data geo, tidak ada retry).
-
-### Blocklist sync ke cache
-
-`BlocklistService.syncCache()` dipanggil di `OnModuleInit` — otomatis berjalan ulang di setiap restart pm2 cluster worker karena setiap worker adalah proses Nest baru. Kalau cache tidak aktif (`isEnabled() === false`), method ini langsung no-op. `POST/DELETE /v1/blocklist` menulis ke Postgres **dan** langsung ke cache (kalau aktif) di request yang sama; `syncCache()` di startup hanya catch-up untuk perubahan dari luar atau IP yang sudah expired.
+Ini satu-satunya tempat di codebase yang keluar dari Prisma Client API biasa.
 
 ---
 
-## node-redis v6 — lifecycle (kalau `RedisCacheService` aktif)
+## Migrations
 
-Client dibuat di constructor, `connect()` dipanggil di `onModuleInit()`, `quit()` di `onModuleDestroy()`. Listener `error` harus didaftarkan **sebelum** connect (node-redis v6 bisa crash proses kalau ada error tanpa listener). Tidak ada kode lain yang boleh memanggil `quit()`/`disconnect()` di luar `onModuleDestroy`. Kalau `REDIS_URL` tidak di-set, `CacheModule` tidak pernah membuat instance ini sama sekali — tidak ada percobaan koneksi, tidak ada retry, tidak ada log error soal Redis.
+| Migration | Isi |
+|---|---|
+| `20260629000000_init` | Semua tabel awal: sites, visitors, visit_logs, fingerprint_components, blocked_ips, admins + extension pgcrypto |
+| `20260630000000_add_visitor_summary_view` | CREATE VIEW visitor_summary |
+| `20260701000000_add_ua_hints_and_geo` | ALTER TABLE visit_logs (ua_brands, ua_mobile, ua_platform, ua_platform_version, geo_lat, geo_lon, geo_accuracy) + ALTER TABLE fingerprint_components (ua_ch_raw) + UPDATE VIEW visitor_summary |
+| `20260701000001_add_timezone_country` | ALTER TABLE visit_logs (timezone) + ALTER TABLE visitors (timezone_country) + UPDATE VIEW visitor_summary (timezoneCountry, lastTimezone) |
 
----
-
-## Urutan Pengerjaan — Phase 1 (Fondasi & Tracking, 2-3 hari)
-
-1. Scaffold project Nest, Node 24 engines, `.env.example`, TypeScript strict.
-2. `ConfigModule` + validasi env (class-validator) — fail fast kalau `DATABASE_URL`/`JWT_SECRET` kosong. `REDIS_URL` **opsional**, tidak divalidasi sebagai wajib.
-3. `npx prisma init`, tulis `schema.prisma` untuk 5 model awal (sites, visitors, visit_logs, fingerprint_components, blocked_ips), `npx prisma migrate dev --name init`.
-4. `PrismaModule`/`PrismaService` (`@Global()`, `OnModuleInit` → `$connect()`, `OnModuleDestroy` → `$disconnect()`).
-5. `CacheModule` (factory provider: `RedisCacheService` kalau `REDIS_URL` ada, else `NoopCacheService`) — smoke test `PING` kalau Redis aktif.
-6. `SitesModule` (create/findAll/deactivate + generate API key `crypto.randomBytes`, prefix `fts_<slug>_<random>`).
-7. `SiteKeyGuard` (unit test terpisah dengan mock `SitesService` + `CacheService` — termasuk skenario `isEnabled() === false`).
-8. `@GetIp()` decorator.
-9. `TrackModule` — DTO, controller, service (upsert atomic via `$queryRaw` + insert visit_logs) — dibangun terakhir karena bergantung pada semua hal di atas.
-10. Global `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`) di `main.ts`.
-11. `ecosystem.config.js` (pm2 cluster 2 instance, port 3100), setup nginx proxy di Plesk, `sdk/tracker.js` minimal (FingerprintJS v4 + POST ke `/v1/track`) dengan header CORS/cache.
-12. Verifikasi end-to-end di `tracker.fts-tech.co.id` pada satu website test — sekali dengan Redis aktif, sekali tanpa (`REDIS_URL` kosong), pastikan keduanya berfungsi identik dari sisi API.
-
-## Phase 2 (Admin API, 2 hari)
-
-- Tambah model `Admin` di `schema.prisma` → `npx prisma migrate dev --name add_admins`, seed satu baris admin dengan bcrypt hash.
-- `AuthModule`: `POST /v1/auth/login` (validasi username/password_hash via bcrypt) → JWT. `JwtAuthGuard` + `JwtStrategy` standar Nest/Passport.
-- `VisitorsModule` controller: `GET /v1/visitors` (pagination `take`/`skip` + filter country/date-range), `GET /v1/visitors/:fingerprintId` (detail + 50 log terakhir).
-- `SitesModule` controller: `GET/POST /v1/sites`, `DELETE /v1/sites/:id`.
-- `BlocklistModule` controller: `GET/POST /v1/blocklist`, `DELETE /v1/blocklist/:ip`, `GET /v1/blocklist/check/:ip`.
-
-## Phase 3 (Enrichment & Integrasi, 1-2 hari)
-
-- Finalisasi/hardening `IpEnricherModule` (sudah didesain & sebagian dibangun di Phase 1 lewat `TrackService`).
-- Rate limiting `@nestjs/throttler` di `TrackController` (per-IP atau per-site-key), dipasang berdampingan dengan `SiteKeyGuard`.
-- `AnalyticsModule.overview()` — aggregate query Prisma (`count()`, `groupBy(['country'])`, bucket 30 hari via raw query `date_trunc('day', created_at)` di `visit_logs` — Prisma belum punya helper native untuk date-bucketing, jadi ini juga lewat `$queryRaw`).
-- Contoh middleware Laravel & Next.js (dokumentasi, bukan kode Nest).
-
-## Phase 4 (Opsional, tanpa estimasi)
-
-Export CSV visitor, auto-sync blocklist ke Cloudflare Firewall Rules API, notifikasi WhatsApp/Slack saat block baru, dashboard frontend Vue 3, multi-admin (`UsersModule` CRUD di atas tabel `admins` yang sudah ada dari Phase 2 — tidak perlu migrasi baru).
+Deploy migration ke production: `npx prisma migrate deploy` — dijalankan manual sebelum app restart.
 
 ---
 
-## Migrations (Prisma Migrate)
+## Cache Key Structure (Redis aktif)
 
-Schema didefinisikan satu tempat di `prisma/schema.prisma`. Karena implementasi dikerjakan dalam satu sesi (bukan dipisah per hari kalender), keenam model (`Site`, `Visitor`, `VisitLog`, `FingerprintComponent`, `BlockedIp`, `Admin`) digabung jadi **satu migration awal** `prisma/migrations/20260629000000_init/`, bukan dipecah Phase 1 vs Phase 2 seperti rencana semula — secara fungsional tidak ada bedanya (`Admin` tetap tabel yang sama, `UsersModule` Phase 4 tetap tinggal nambah CRUD di atasnya tanpa migrasi baru).
-
-Catatan implementasi: migration SQL ini di-generate dengan `npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script` (diff offline, tidak butuh koneksi DB live) lalu ditambahkan manual `CREATE EXTENSION IF NOT EXISTS "pgcrypto";` di baris pertama — environment implementasi ini tidak punya akses ke Postgres milik project (ada instance Postgres lain yang sedang berjalan di mesin yang sama tapi bukan milik project ini, sengaja tidak disentuh). Sebelum dipakai sungguhan: jalankan `npx prisma migrate deploy` melawan `tracker_db` yang sebenarnya, lalu verifikasi `npx prisma migrate status` bersih.
-
-Setiap `migration.sql` di-review manual sebelum commit (cek `@map`/`@@map` ter-translate benar ke snake_case, FK `onDelete` sesuai, tipe `jsonb` untuk `raw`, `timestamptz` bukan `timestamp` polos). Deploy ke production via `npx prisma migrate deploy` — dijalankan manual sebagai langkah deploy terpisah, **bukan** otomatis saat app boot, supaya 2 worker pm2 cluster tidak race menjalankan migration bersamaan saat restart bersamaan.
+- `blocklist:ip:{ip_address}` → JSON `{reason, expires_at}`, TTL = expires_at atau permanen.
+- `site:key:{api_key}` → JSON data site, TTL 300 detik.
 
 ---
 
-## Testing (proporsional)
+## Testing
 
-**Unit:** `SiteKeyGuard` (matrix: missing header, cache hit aktif/inactive, cache miss→DB, `CacheService.isEnabled() === false`→selalu DB), `BlocklistService.syncCache` (permanent vs expiring vs sudah-expired vs cache disabled→no-op), `IpEnricherService.enrichAndSave` (success/fail/timeout, harus swallow error).
+**Unit:** `SiteKeyGuard`, `BlocklistService.syncCache`, `IpEnricherService.enrichAndSave`, `RedisCacheService`, `NoopCacheService`.
 
-**Integration/e2e:** `POST /v1/track` full path (guard + upsert + insert log) — test paling bernilai di seluruh suite; test konkurensi (2 request bersamaan, fingerprint_id sama → harus jadi 1 visitor dengan visit_count=2, enrichment trigger sekali saja); `GET /v1/blocklist/check/:ip`; blocklist sync saat module init; sekali jalankan seluruh suite e2e dengan `REDIS_URL` di-unset untuk memastikan jalur Noop tidak merusak apa pun.
-
-Tidak perlu: load testing, e2e matrix lengkap untuk semua endpoint admin CRUD (cukup happy-path smoke test, logic-nya simple), contract testing.
+**e2e:** `POST /v1/sync` full path (guard + upsert + insert log), `GET /v1/blocklist/check/:ip`, blocklist sync saat module init, seluruh suite dengan `REDIS_URL` unset untuk validasi jalur Noop.
 
 ---
 
-## Deployment
+## Deployment (Production)
 
-- Domain `tracker.fts-tech.co.id` (Cloudflare wildcard aktif, Full SSL).
-- VPS srv1142454 (Plesk, Hostinger), DB baru `tracker_db` + user `tracker_user`.
-- Redis 8.x **opsional** — pasang kalau ingin lapisan cache untuk performa `SiteKeyGuard`/blocklist-check di traffic tinggi; kalau di-pasang, bind `127.0.0.1` saja. Tanpa Redis, app tetap jalan penuh, hanya setiap site-key lookup yang belum di-cache jatuh ke query DB (yang sudah indexed dan murah).
-- nginx (Plesk) proxy `tracker.fts-tech.co.id` → `localhost:3100`.
-- `sdk/tracker.js` disajikan langsung nginx, header `Access-Control-Allow-Origin: *`, `Cache-Control: public, max-age=3600`.
-- Build: `npm run build` → `npx prisma migrate deploy` → `pm2 start ecosystem.config.js` (cluster, 2 instance).
+- Domain: `relay.fts-tech.co.id` (Cloudflare, Full SSL)
+- Server: Plesk Hostinger, Node 25 via nodenv
+- Process manager: Passenger (via Plesk)
+- Static assets: `sdk/widget.js` disajikan NestJS static middleware di prefix `/static/`
+- DB: PostgreSQL (tracker_db), user tracker_username
+- Redis: opsional, tidak dipasang di production saat ini
+
+Build + deploy flow:
+1. `git push origin main` ke bare repo di server
+2. Plesk "Run script" atau SSH manual: `npm run build`
+3. `chown -R tracker_username:psacln dist/` (jika build dijalankan sebagai root)
+4. `npx prisma migrate deploy` (jika ada migration baru)
+5. `touch tmp/restart.txt` (Passenger restart trigger)
+
+---
+
+## Phase 4 (Opsional, belum dikerjakan)
+
+Export CSV visitor, auto-sync blocklist ke Cloudflare Firewall Rules API, notifikasi WhatsApp/Slack saat block baru, dashboard frontend Vue 3, multi-admin CRUD di atas tabel `admins` yang sudah ada.
